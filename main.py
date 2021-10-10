@@ -2,7 +2,7 @@ import time
 import pandas as pd
 import argparse
 import torch
-from transformers import AutoTokenizer,  get_cosine_schedule_with_warmup
+from transformers import AutoTokenizer, get_cosine_schedule_with_warmup
 
 from torch.utils.data import Dataset, DataLoader
 from datasets import Dataset
@@ -108,71 +108,72 @@ train_data = create_folds(train_data, args.nfolds, args.seed)
 
 train_data['answers'] = train_data[['answer_start', 'answer_text']].apply(convert_answers, axis=1)
 
-accelerator = Accelerator()
-print(f"{accelerator.device} is used")
 
-x_train, x_valid = train_data.query(f"Fold != {args.nfolds}"), train_data.query(f"Fold == {args.nfolds}")
+def run(fold):
+    accelerator = Accelerator()
+    print(f"{accelerator.device} is used")
 
-model = Model(args.model_name)
-tokenizer = AutoTokenizer.from_pretrained(args.model_name)
-pad_on_right = tokenizer.padding_side == 'right'
+    x_train, x_valid = train_data.query(f"Fold != {fold}"), train_data.query(f"Fold == {fold}")
 
-train_dataset = Dataset.from_pandas(x_train)
-train_features = train_dataset.map(
-    partial(
-        prepare_train_features,
-        tokenizer=tokenizer,
-        pad_on_right=pad_on_right,
-        max_length=args.max_length,
-        doc_stride=args.doc_stride
-    ),
-    batched=True,
-    remove_columns=train_dataset.column_names)
+    model = Model(args.model_name)
+    tokenizer = AutoTokenizer.from_pretrained(args.model_name)
+    pad_on_right = tokenizer.padding_side == 'right'
 
-train_ds = ChaiiDataset(train_features)
-train_dl = DataLoader(train_ds,
-                      batch_size=args.batch_size,
-                      num_workers=args.num_workers,
-                      shuffle=True,
-                      pin_memory=True,
-                      drop_last=True)
+    train_dataset = Dataset.from_pandas(x_train)
+    train_features = train_dataset.map(
+        partial(
+            prepare_train_features,
+            tokenizer=tokenizer,
+            pad_on_right=pad_on_right,
+            max_length=args.max_length,
+            doc_stride=args.doc_stride
+        ),
+        batched=True,
+        remove_columns=train_dataset.column_names)
 
-valid_dataset = Dataset.from_pandas(x_valid)
-valid_features = valid_dataset.map(
-    partial(
-        prepare_train_features,
-        tokenizer=tokenizer,
-        pad_on_right=pad_on_right,
-        max_length=args.max_length,
-        doc_stride=args.doc_stride
-    ),
-    batched=True,
-    remove_columns=train_dataset.column_names)
+    train_ds = ChaiiDataset(train_features)
+    train_dl = DataLoader(train_ds,
+                          batch_size=args.batch_size,
+                          num_workers=args.num_workers,
+                          shuffle=True,
+                          pin_memory=True,
+                          drop_last=True)
 
-valid_ds = ChaiiDataset(valid_features)
-valid_dl = DataLoader(valid_ds,
-                      batch_size=args.batch_size,
-                      num_workers=args.num_workers,
-                      shuffle=False,
-                      pin_memory=True,
-                      drop_last=False)
+    valid_dataset = Dataset.from_pandas(x_valid)
+    valid_features = valid_dataset.map(
+        partial(
+            prepare_train_features,
+            tokenizer=tokenizer,
+            pad_on_right=pad_on_right,
+            max_length=args.max_length,
+            doc_stride=args.doc_stride
+        ),
+        batched=True,
+        remove_columns=train_dataset.column_names)
 
-optimizer = make_optimizer(args, model)
-lr_scheduler = get_cosine_schedule_with_warmup(optimizer,
-                                               num_warmup_steps=0,
-                                               num_training_steps=args.epochs * len(train_dl))
+    valid_ds = ChaiiDataset(valid_features)
+    valid_dl = DataLoader(valid_ds,
+                          batch_size=args.batch_size,
+                          num_workers=args.num_workers,
+                          shuffle=False,
+                          pin_memory=True,
+                          drop_last=False)
 
-model, train_dl, valid_dl, optimizer, lr_scheduler = accelerator.prepare(model, train_dl, valid_dl, optimizer,
-                                                                         lr_scheduler)
+    optimizer = make_optimizer(args, model)
+    lr_scheduler = get_cosine_schedule_with_warmup(optimizer,
+                                                   num_warmup_steps=0,
+                                                   num_training_steps=args.epochs * len(train_dl))
 
-for fold in range(args.nfolds):
+    model, train_dl, valid_dl, optimizer, lr_scheduler = accelerator.prepare(model, train_dl, valid_dl, optimizer,
+                                                                             lr_scheduler)
+
     print(f'Fold: {fold}')
     best_loss = 9999
     start_time = time.time()
 
     for epoch in range(args.epochs):
         train_loss = train(train_dl, model, optimizer)
-        valid_loss = evaluate(model, valid_dl)
+        valid_loss = evaluate(valid_dl, model)
 
         if valid_loss <= best_loss:
             print(f"Epoch:{epoch} |Train Loss:{train_loss}|Valid Loss:{valid_loss}")
@@ -182,6 +183,11 @@ for fold in range(args.nfolds):
             torch.save(model.state_dict(), f'./model{fold}/model{fold}.bin')
             tokenizer.save_pretrained(f'./model{fold}')
 
-        end_time = time.time()
-        print(f"Time taken by epoch {epoch} is {end_time - start_time:.2f}s")
-        start_time = end_time
+            end_time = time.time()
+            print(f"Time taken by epoch {epoch} is {end_time - start_time:.2f}s")
+            start_time = end_time
+
+    return best_loss
+
+
+best_loss_per_fold = [run(f) for f in range(args.nfolds)]
