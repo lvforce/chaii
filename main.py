@@ -5,7 +5,8 @@ import torch
 from transformers import AutoTokenizer,  get_cosine_schedule_with_warmup
 
 from torch.utils.data import Dataset, DataLoader
-from datasets.chaii_dataset import ChaiiDataset
+from datasets import Dataset
+from dataset.chaii_dataset import ChaiiDataset
 from accelerate import Accelerator
 from functools import partial
 
@@ -70,7 +71,7 @@ parser.add_argument(
 )
 
 parser.add_argument(
-    '--lr', type=float,
+    '--learning_rate', type=float,
 )
 
 parser.add_argument(
@@ -114,7 +115,7 @@ x_train, x_valid = train_data.query(f"Fold != {args.nfolds}"), train_data.query(
 
 model = Model(args.model_name)
 tokenizer = AutoTokenizer.from_pretrained(args.model_name)
-pad_on_right = tokenizer.padding_size == 'right'
+pad_on_right = tokenizer.padding_side == 'right'
 
 train_dataset = Dataset.from_pandas(x_train)
 train_features = train_dataset.map(
@@ -164,14 +165,13 @@ lr_scheduler = get_cosine_schedule_with_warmup(optimizer,
 model, train_dl, valid_dl, optimizer, lr_scheduler = accelerator.prepare(model, train_dl, valid_dl, optimizer,
                                                                          lr_scheduler)
 
-for f in range(args.nfolds):
-    print(f'Fold: {args.fold}')
+for fold in range(args.nfolds):
+    print(f'Fold: {fold}')
     best_loss = 9999
     start_time = time.time()
 
     for epoch in range(args.epochs):
-        train_loss = train(train_dl, model, optimizer, epoch,
-                           args.fold, best_loss, lr_scheduler)
+        train_loss = train(train_dl, model, optimizer)
         valid_loss = evaluate(model, valid_dl)
 
         if valid_loss <= best_loss:
@@ -179,8 +179,8 @@ for f in range(args.nfolds):
             print(f"Loss Decreased from {best_loss} to {valid_loss}")
 
             best_loss = valid_loss
-            torch.save(model.state_dict(), f'./model{args.fold}/model{args.fold}.bin')
-            tokenizer.save_pretrained(f'./model{args.fold}')
+            torch.save(model.state_dict(), f'./model{fold}/model{fold}.bin')
+            tokenizer.save_pretrained(f'./model{fold}')
 
         end_time = time.time()
         print(f"Time taken by epoch {epoch} is {end_time - start_time:.2f}s")

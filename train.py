@@ -1,4 +1,4 @@
-import tqdm
+from tqdm import tqdm
 import torch
 
 def train(train_loader, model, optimizer):
